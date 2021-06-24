@@ -4,6 +4,11 @@ import random
 
 import torch.nn as nn
 import torch.nn.functional as F
+from utils import *
+from dgl.nn.pytorch import GraphConv as GraphConv
+
+global haveedge
+haveedge = False
 
 class Classification(nn.Module):
 
@@ -313,3 +318,154 @@ class GraphSage(nn.Module):
 
 		
 		return aggregate_feats
+    
+###########################################################################3 
+    
+ 
+class GVAE_FrameWork(torch.nn.Module):
+    def __init__(self, latent_dim, numb_of_rel, encoder, decoder, mlp_decoder=False, layesrs=None):
+        """
+        :param latent_dim: the dimention of each embedded node; |z| or len(z)
+        :param numb_of_rel:
+        :param decoder:
+        :param encoder:
+        :param mlp_decoder: either apply an multi layer perceptorn on each decoeded embedings
+        """
+        super(GVAE_FrameWork, self).__init__()
+        # self.relation_type_param = torch.nn.ParameterList(torch.nn.Parameter(torch.Tensor(2*latent_space_dim)) for x in range(latent_space_dim))
+        self.numb_of_rel = numb_of_rel
+        self.decoder = decoder
+        self.encoder = encoder
+
+        if mlp_decoder:
+            self.embedding_level_mlp = node_mlp(input=latent_dim, layers=layesrs)
+
+        self.dropout = torch.nn.Dropout(0)
+        self.reset_parameters()
+
+        # self.mlp_decoder = torch.nn.ModuleList([edge_mlp(2*latent_space_dim,[16,8,1]) for i in range(self.numb_of_rel)])
+
+    def forward(self, adj, x):
+        # asakhuja - Start Calling edge generator function if flag of edge embedding is set
+
+        if (haveedge):
+            # x = self.dropout(x)
+            z, m_z, std_z, edge_emb = self.inference(adj, x)
+            if decoder == "SBM_REL":
+                generated_adj = self.generator_edge(z, edge_emb)
+            else:
+                generated_adj = self.generator(z)
+
+        else:
+            z, m_z, std_z = self.inference(adj, x)
+            z = self.dropout(z)
+            generated_adj = self.generator(z)
+        return std_z, m_z, z, generated_adj
+
+    # asakhuja - End
+    def reset_parameters(self):
+        pass
+
+    def reparameterize(self, mean, std):
+        eps = torch.randn_like(std)
+        return eps.mul(std).add(mean)
+
+    # inference model
+    def inference(self, adj, x):
+        # asakhuja - Start Calling edge encoder function if flag of edge embedding is set
+        if (haveedge):
+            z, m_q_z, std_q_z, edge_emb = self.encoder(adj, x)
+            return z, m_q_z, std_q_z, edge_emb
+        else:
+            z, m_q_z, std_q_z = self.encoder(adj, x)
+            return z, m_q_z, std_q_z
+        # asakhuja - End
+
+    # generation model
+    # asakhuja - Start Added edge generator
+    def generator_edge(self, z, edge_emb):
+        # apply chain of mlp on nede embedings
+        # z = self.embedding_level_mlp(z)
+
+        gen_adj = []
+        if (haveedge):
+            adj = self.decoder(z, edge_emb)
+        else:
+            adj = self.decoder(z)
+        return adj
+
+    def generator(self, z):
+        # apply chain of mlp on nede embedings
+        # z = self.embedding_level_mlp(z)
+
+        gen_adj = []
+        adj = self.decoder(z)
+        return adj
+        # asakhuja - End
+
+    
+class multi_layer_GCN(torch.nn.Module):
+    def __init__(self, in_feature, latent_dim=32, layers=[64]):
+        """
+        :param in_feature: the size of input feature; X.shape()[1]
+        :param latent_dim: the dimention of each embedded node; |z| or len(z)
+        :param layers: a list in which each element determine the siae of corresponding GCNN Layer.
+        """
+        super(multi_layer_GCN, self).__init__()
+        layers = [in_feature] + layers
+        if len(layers) < 1: raise Exception("sorry, you need at least two layer")
+        self.ConvLayers = torch.nn.ModuleList(
+            GraphConv(layers[i], layers[i + 1], activation=None, bias=False, weight=True) for i in
+            range(len(layers) - 1))
+
+        self.q_z_mean = GraphConv(layers[-1], latent_dim, activation=None, bias=False, weight=True)
+
+        self.q_z_std = GraphConv(layers[-1], latent_dim, activation=None, bias=False, weight=True)
+
+    def forward(self, adj, x):
+        dropout = torch.nn.Dropout(0)
+        for conv_layer in self.ConvLayers:
+            x = torch.tanh(conv_layer(adj, x))
+            x = dropout(x)
+
+        m_q_z = self.q_z_mean(adj, x)
+        std_q_z = torch.relu(self.q_z_std(adj, x)) + .0001
+
+        z = self.reparameterize(m_q_z, std_q_z)
+        return z, m_q_z, std_q_z,
+
+    def reparameterize(self, mean, std):
+        eps = torch.randn_like(std)
+        return eps.mul(std).add(mean)
+
+
+
+class MapedInnerProductDecoder(torch.nn.Module):
+    """Decoder for using inner product of multiple transformed Z"""
+
+    def __init__(self, layers, num_of_relations, in_size, normalize, DropOut_rate):
+        #
+        super(MapedInnerProductDecoder, self).__init__()
+        self.models = torch.nn.ModuleList(
+            node_mlp(in_size, layers, normalize, DropOut_rate) for i in range(num_of_relations))
+
+    def forward(self, z):
+        A = []
+        for trans_model in self.models:
+            tr_z = trans_model(z)
+            layer_i = torch.mm(tr_z, tr_z.t())
+            A.append(layer_i)
+        return torch.sum(torch.stack(A), 0)
+
+    def get_edges_features(self, z):
+        gen_adj = []
+        for trans_model in self.models:
+            tr_z = trans_model(z)
+            layer_i = torch.mm(tr_z, tr_z.t())
+            # gen_adj.append((h) * self.p_of_relation(z, i))
+            gen_adj.append(layer_i)
+            # gen_adj.append(self.mlp_decoder[i](self.to_3D(z)))
+        return torch.stack(gen_adj)
+
+
+         
