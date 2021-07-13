@@ -18,7 +18,8 @@ import numpy as np
 from torch.utils.data import TensorDataset
 #import matplotlib
 #matplotlib.use('TkAgg')
-import plotter
+
+from src import plotter
 
 
 def get_metrices(labels_test, labels_pred):
@@ -46,7 +47,8 @@ def knn(features, labels):
 
 
 def logistiic_regression(features, labels):
-    features_train, features_test, labels_train, labels_test = train_test_split(features, labels, test_size=0.33, random_state=42) #split into test and train
+    features_train, features_test, labels_train, labels_test = train_test_split(features, labels, test_size=0.33, random_state=42) 
+                                                                #split into test and train
     clf = LogisticRegressionCV(
          Cs=10, cv=10, scoring="accuracy", verbose=False, multi_class="ovr", max_iter=10000
     )
@@ -54,6 +56,14 @@ def logistiic_regression(features, labels):
     labels_pred = clf.predict(features_test)
     return get_metrices(labels_test, labels_pred), clf
 
+
+def logistic_regression_all(features, labels, verb = False):                                                              #split into test and train
+    clf = LogisticRegressionCV(
+         Cs=10, cv=10, scoring="accuracy", verbose = verb, multi_class="ovr", max_iter=10000
+    )
+    clf.fit(features, labels)
+    labels_pred = clf.predict(features)
+    return get_metrices(labels, labels_pred), clf
 
 def kmeans(labels_true,labels_pred):
     nmi_arth=normalized_mutual_info_score(labels_true, labels_pred, average_method='arithmetic')
@@ -65,8 +75,6 @@ def kmeans(labels_true,labels_pred):
 
 
 def NN(features, labels):
-
-
 
     # Hyper-parameters 
     input_size = features.shape[1]
@@ -122,6 +130,11 @@ def NN(features, labels):
             out = self.l2(out)
             # no activation and no softmax at the end
             return out
+        
+        def predict(self, x):
+            output = self.forward(x)
+            _, labels_pred = torch.max(outputs.data, 1)
+            return labels_pred
     
     model = NeuralNet(input_size, hidden_size, num_classes)
     loss_function = nn.CrossEntropyLoss()
@@ -176,3 +189,95 @@ def NN(features, labels):
      
     result = get_metrices(labels_test, labels_pred)
     return result , model
+
+def NN_all(features, labels):
+
+    # Hyper-parameters 
+    input_size = features.shape[1]
+    hidden_size = 64
+    num_epochs = 100
+    batch_size = 100
+    learning_rate = 0.001
+    
+    num_classes = len(np.unique(labels, return_counts=False))
+    y = torch.Tensor(labels).type(torch.LongTensor) 
+    X = torch.Tensor(features)
+    
+    train_dataset = TensorDataset(X,y)
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, 
+                                                batch_size=batch_size, 
+                                                shuffle=False)   
+    
+    
+    # Fully connected neural network with one hidden layer
+    class NeuralNet(nn.Module):
+        def __init__(self, input_size, hidden_size, num_classes):
+            super(NeuralNet, self).__init__()
+            np.random.seed(0)
+            torch.seed()
+            torch.manual_seed(0)
+            torch.cuda.manual_seed(0)
+            torch.backends.cudnn.enabled = False
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
+
+            self.input_size = input_size
+            self.l1 = nn.Linear(input_size, hidden_size) 
+            self.relu = nn.ReLU()
+            self.l2 = nn.Linear(hidden_size, num_classes)  
+        
+        def forward(self, x):
+            out = self.l1(x)
+            out = self.relu(out)
+            out = self.l2(out)
+            # no activation and no softmax at the end
+            return out
+        
+        def predict(self, x):
+            output = self.forward(x)
+            _, labels_pred = torch.max(output.data, 1)
+            return labels_pred
+            
+    
+    model = NeuralNet(input_size, hidden_size, num_classes)
+    loss_function = nn.CrossEntropyLoss()
+    
+    
+    # Loss and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    plt = plotter.Plotter(functions=["loss"])
+    # Train the model
+    for epoch in range(num_epochs):
+        model.train()
+        train_loss, valid_loss = [], []
+        for i, (features, labels) in enumerate(train_loader):  
+            # Forward pass
+            outputs = model(features)
+            loss = criterion(outputs, labels)
+            
+            # Backward and optimize
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            train_loss.append(loss.item())
+
+        outputs = model(X)
+        train_loss = criterion(outputs, y)
+
+
+    # Test the model
+    # In test phase, we don't need to compute gradients (for memory efficiency)
+    with torch.no_grad():
+        labels_pred=torch.zeros(0,dtype=torch.long, device='cpu')
+        labels_test=torch.zeros(0,dtype=torch.long, device='cpu')
+        for features, labels in train_loader:
+            outputs = model(features)
+            # max returns (value ,index)
+            _, predicted = torch.max(outputs.data, 1)
+            # Append batch prediction results
+            labels_pred=torch.cat([labels_pred,predicted.view(-1).cpu()])
+            labels_test=torch.cat([labels_test,labels.view(-1).cpu()])
+     
+    result = get_metrices(labels_test, labels_pred)
+    return result, model

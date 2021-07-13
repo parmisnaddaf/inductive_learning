@@ -33,7 +33,7 @@ def evaluate(dataCenter, ds, graphSage, classification, device, max_vali_f1, nam
                 params.append(param)
 
     embs = graphSage(val_nodes)
-    np.save('embs.npy', embs)
+    #np.save('embs.npy', embs)
     logists = classification(embs)
     _, predicts = torch.max(logists, 1)
     labels_val = labels[val_nodes]
@@ -58,12 +58,13 @@ def evaluate(dataCenter, ds, graphSage, classification, device, max_vali_f1, nam
         for param in params:
             param.requires_grad = True
 
-        torch.save(models, 'models/model_best_{}_ep{}_{:.4f}.torch'.format(name, cur_epoch, test_f1))
+        # torch.save(models, 'models/model_best_{}_ep{}_{:.4f}.torch'.format(name, cur_epoch, test_f1))
 
     for param in params:
         param.requires_grad = True
 
     return max_vali_f1
+
 
 def get_gnn_embeddings(gnn_model, dataCenter, ds):
     print('Loading embeddings from trained GraphSAGE model.')
@@ -85,6 +86,7 @@ def get_gnn_embeddings(gnn_model, dataCenter, ds):
     assert len(embs) == len(nodes)
     print('Embeddings loaded.')
     return embs.detach()
+
 
 def train_classification(dataCenter, graphSage, classification, ds, device, max_vali_f1, name, epochs=800):
     print('Training Classification ...')
@@ -216,7 +218,8 @@ class node_mlp(torch.nn.Module):
         :param normalize: either use the normalizer layer or not
         :param layers: a list which shows the ouyput feature size of each layer; Note the number of layer is len(layers)
         """
-        super(node_mlp, self).__init__()
+        super().__init__()
+        #super(node_mlp, self).__init__()
         self.layers = torch.nn.ModuleList([torch.nn.Linear(input, layers[0])])
 
         for i in range(len(layers)-1):
@@ -399,18 +402,53 @@ def sparse_to_tuple(sparse_mx):
     shape = sparse_mx.shape
     return coords, values, shape
 
-
-
-
-def make_test_train(adj, feat):
-    num_test = int(np.floor(feat.shape[0] / 10.))
-    num_val = int(np.floor(feat.shape[0] / 20.))
-    rng = default_rng()
-    numbers = rng.choice(feat.shape[0], feat.shape[0], replace=False)
-    test_nodes = numbers[:num_test]
-    val_nodes = numbers[-num_val:]
-    train_nodes = numbers[num_val+ num_test:]
+import copy
+def make_test_train_gpu(adj, feat, split = []):
+    if len(split) == 0:
+        num_test = int(np.floor(feat.shape[0] / 3.))
+        num_val = int(np.floor(feat.shape[0] / 6.))
+        rng = default_rng()
+        numbers = rng.choice(feat.shape[0], feat.shape[0], replace=False)
+        test_nodes = numbers[:num_test]
+        val_nodes = numbers[-num_val:]
+        train_nodes = numbers[num_val+ num_test:]
+    else:
+        train_nodes = split[0]
+        val_nodes = split[1]
+        test_nodes = split[2]
     
+    feat_train = np.zeros((feat.shape[0], feat.shape[1]))
+    feat_val = []
+    feat_test = []
+    for i in train_nodes:
+        feat_train[i] = feat[i].cpu().data.numpy()
+    
+
+    #create adj
+    adj_test = []
+    adj_val = []
+    adj_train = np.zeros((adj.shape[0], adj.shape[1]))
+    
+    adj_train[train_nodes, :] = adj[train_nodes, :]
+    adj_train[:, train_nodes] = adj[:, train_nodes]
+    
+    #adj_train[:, val_nodes] = 0
+
+    return adj_train , adj_val, adj_test, feat_train, feat_val, feat_test
+
+def make_test_train(adj, feat, split = []):
+    if len(split) == 0:
+        num_test = int(np.floor(feat.shape[0] / 3.))
+        num_val = int(np.floor(feat.shape[0] / 6.))
+        rng = default_rng()
+        numbers = rng.choice(feat.shape[0], feat.shape[0], replace=False)
+        test_nodes = numbers[:num_test]
+        val_nodes = numbers[-num_val:]
+        train_nodes = numbers[num_val+ num_test:]
+    else:
+        train_nodes = split[0]
+        val_nodes = split[1]
+        test_nodes = split[2]
     
     feat_test = np.zeros((feat.shape[0], feat.shape[1]))
     feat_val = np.zeros((feat.shape[0], feat.shape[1]))

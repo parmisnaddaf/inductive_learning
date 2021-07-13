@@ -8,6 +8,8 @@ import pickle as pkl
 import scipy.sparse as sp
 from scipy import sparse
 
+import copy
+
 class DataCenter(object):
     """docstring for DataCenter"""
     def __init__(self, config):
@@ -32,6 +34,7 @@ class DataCenter(object):
                         if not info[-1] in label_map:
                             label_map[info[-1]] = len(label_map)
                         labels.append(label_map[info[-1]])
+                        
                 feat_data = np.asarray(feat_data)
                 labels = np.asarray(labels, dtype=np.int64)
                 
@@ -44,7 +47,7 @@ class DataCenter(object):
                         paper2 = node_map[info[1]]
                         adj_lists[paper1].add(paper2)
                         adj_lists[paper2].add(paper1)
-    
+                            
                 assert len(feat_data) == len(labels) == len(adj_lists)
                 test_indexs, val_indexs, train_indexs = self._split_data(feat_data.shape[0])
     
@@ -105,7 +108,6 @@ class DataCenter(object):
                 cora_content_file = self.config['file_path.cora_content']
                 cora_cite_file = self.config['file_path.cora_cite']
                 
-                #get ids 
                 with open(cora_content_file) as f:
                     content = f.readlines()
                 content = [x.strip() for x in content]
@@ -150,9 +152,7 @@ class DataCenter(object):
                         labels.append(label_map[info[-1]])
                 feat_data = np.asarray(feat_data)
                 labels = np.asarray(labels, dtype=np.int64)
-                    
-
-                
+                                  
                 test_indexs, val_indexs, train_indexs = self._split_data(feat_data.shape[0])
     
                 setattr(self, dataSet+'_test', test_indexs)
@@ -166,9 +166,8 @@ class DataCenter(object):
             if dataSet == "IMDB":
                 obj = []
                 
-                adj_file_name = "/Users/parmis/Desktop/parmis-thesis/related-work/codes/graphSAGE-pytorch-master/IMDB/edges.pkl"
-            
-            
+                adj_file_name = self.config['file_path.imdb_edges']
+                
                 with open(adj_file_name, 'rb') as f:
                     obj.append(pkl.load(f))
             
@@ -189,33 +188,45 @@ class DataCenter(object):
                 node_label.extend([1 for i in range(in_1,in_2)])
                 node_label.extend([2 for i in range(in_2, in_3)])
             
-            
-                obj = []
-                with open("/Users/parmis/Desktop/parmis-thesis/related-work/codes/graphSAGE-pytorch-master/IMDB/node_features.pkl", 'rb') as f:
+                obj = []                
+                feat_file_name = self.config['file_path.imdb_feats']
+                with open(feat_file_name, 'rb') as f:
                     obj.append(pkl.load(f))
                 feature = sp.csr_matrix(obj[0])
                 
-                
-                test_indexs, val_indexs, train_indexs = self._split_data(feature.shape[0])
-                
-                
+                index = 9000
+                test_indexs, val_indexs, train_indexs = self._split_data(feature[:index].shape[0])
+                                
                 setattr(self, dataSet+'_test', test_indexs)
                 setattr(self, dataSet+'_val', val_indexs)
                 setattr(self, dataSet+'_train', train_indexs)
     
-                setattr(self, dataSet+'_feats', feature.toarray())
-                setattr(self, dataSet+'_labels', node_label)
-                setattr(self, dataSet+'_adj_lists', adj.toarray())
-                setattr(self, dataSet+'_edge_labels', edge_labels.toarray())
-            if dataSet == "ACM":
-                adj_file_name = '/Users/parmis/Desktop/parmis-thesis/related-work/codes/graphSAGE-pytorch-master/ACM/edges.pkl'
+                setattr(self, dataSet+'_feats', feature[:index].toarray())
+                setattr(self, dataSet+'_labels', np.array(node_label[:index]))
+                setattr(self, dataSet+'_adj_lists', adj[:index,:index].toarray())
+                setattr(self, dataSet+'_edge_labels', edge_labels[:index].toarray())
 
+            if dataSet == "ACM":
+                obj = []
+                adj_file_name = self.config['file_path.acm_edges']
                 with open(adj_file_name, 'rb') as f:
                         obj.append(pkl.load(f))
-            
+                        
                 adj = sp.csr_matrix(obj[0][0].shape)
                 for matrix in obj:
-                    adj +=matrix[0]
+                    nnz = matrix[0].nonzero() # indices of nonzero values
+                    for i, j in zip(nnz[0], nnz[1]):
+                        adj[i,j] = 1
+                        adj[j,i] = 1
+                    #adj +=matrix[0]
+                
+                # to fix the bug on running GraphSAGE
+                adj = adj.toarray()
+                for i in range(len(adj)):
+                    if sum(adj[i, :]) == 0:
+                        idx = np.random.randint(0, len(adj))
+                        adj[i,idx] = 1
+                        adj[idx,i] = 1
             
                 edge_labels = matrix[0] + matrix[1]
                 edge_labels += (matrix[2] + matrix[3])*2
@@ -230,28 +241,29 @@ class DataCenter(object):
             
             
                 obj = []
-                with open("/Users/parmis/Desktop/parmis-thesis/related-work/codes/graphSAGE-pytorch-master/ACM/node_features.pkl", 'rb') as f:
+                feat_file_name = self.config['file_path.acm_feats']
+                with open(feat_file_name, 'rb') as f:
                     obj.append(pkl.load(f))
                 feature = sp.csr_matrix(obj[0])
             
             
                 index = -1
+                test_indexs, val_indexs, train_indexs = self._split_data(feature[:index].shape[0])
+                
+                setattr(self, dataSet+'_test', test_indexs)
+                setattr(self, dataSet+'_val', val_indexs)
+                setattr(self, dataSet+'_train', train_indexs)
                 
                 setattr(self, dataSet+'_feats', feature[:index].toarray())
-                setattr(self, dataSet+'_labels',node_label[:index])
-                setattr(self, dataSet+'_adj_lists', adj[:index,:index].toarray())
+                setattr(self, dataSet+'_labels',np.array(node_label[:index]))
+                setattr(self, dataSet+'_adj_lists', adj[:index,:index])
                 setattr(self, dataSet+'_edge_labels', edge_labels[:index,:index].toarray())
             
-
-                    
-        
-
-                
 
 
     def _split_data(self, num_nodes, test_split = 3, val_split = 6):
         rand_indices = np.random.permutation(num_nodes)
-
+        
         test_size = num_nodes // test_split
         val_size = num_nodes // val_split
         train_size = num_nodes - (test_size + val_size)
@@ -263,3 +275,23 @@ class DataCenter(object):
         return test_indexs, val_indexs, train_indexs
 
 
+"""
+convert KDD dataset to GraphSAGE one
+"""
+def datasetConvert(dataCenter_kdd, ds):
+    if ds == 'IMDB' or ds == 'ACM':
+        dataCenter_sage = copy.deepcopy(dataCenter_kdd)
+        
+        adj_lists = defaultdict(set)
+        adj_kdd = getattr(dataCenter_kdd, ds + '_adj_lists')
+        for row in range(len(adj_kdd)):
+            for col in range(len(adj_kdd[0])):
+                if adj_kdd[row][col] == 1:
+                    adj_lists[row].add(col)
+                
+        setattr(dataCenter_sage, ds+'_adj_lists', adj_lists)
+    return dataCenter_sage
+
+        
+       
+        
