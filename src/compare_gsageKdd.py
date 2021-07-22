@@ -9,7 +9,6 @@ import os
 import argparse
 
 import numpy as np
-from scipy.sparse import lil_matrix
 import pickle
 import random
 import torch
@@ -20,21 +19,22 @@ import dgl
 from scipy import sparse
 from dgl.nn.pytorch import GraphConv as GraphConv
 
-from src.dataCenter import *
-from src.utils import *
-from src.models import *
-import src.plotter as plotter
-import src.graph_statistics as GS
-import src.compare_gsageKdd_helper as helper
-from src import classification
+from dataCenter import *
+from utils import *
+from models import *
+import plotter as plotter
+import graph_statistics as GS
+import compare_gsageKdd_helper as helper
+import classification
 
 
 #%%  arg setup
 parser = argparse.ArgumentParser(description='pytorch version of GraphSAGE')
 
-parser.add_argument('--dataSet', type=str, default='ACM')
+
+parser.add_argument('--epochs', type=int, default=5)
+parser.add_argument('--dataSet', type=str, default='cora')
 parser.add_argument('--agg_func', type=str, default='MAX')
-parser.add_argument('--epochs', type=int, default=1)
 parser.add_argument('--b_sz', type=int, default=400)
 parser.add_argument('--seed', type=int, default=123)
 parser.add_argument('--cuda', action='store_true',
@@ -44,15 +44,20 @@ parser.add_argument('--learn_method', type=str, default='unsup')
 parser.add_argument('--unsup_loss', type=str, default='normal')
 parser.add_argument('--max_vali_f1', type=float, default=0)
 parser.add_argument('--name', type=str, default='debug')
-parser.add_argument('--config', type=str, default='./src/experiments.conf')
+parser.add_argument('--config', type=str, default='experiments.conf')
 
 args_graphsage = parser.parse_args()
+print("")
+print("graphSage SETING: "+str(args_graphsage))
+##################################################################
 
 
-parser = argparse.ArgumentParser(description='Inductive Interface')
+parser = argparse.ArgumentParser(description='Inductive KDD')
 
+
+parser.add_argument('-e', dest="epoch_number", default=5, help="Number of Epochs")
 parser.add_argument('--model', type=str, default='KDD')
-parser.add_argument('--dataSet', type=str, default='ACM')
+parser.add_argument('--dataSet', type=str, default='cora')
 parser.add_argument('--seed', type=int, default=123)
 parser.add_argument('-num_node', dest="num_node", default=-1, type=str,
                     help="the size of subgraph which is sampled; -1 means use the whule graph")
@@ -72,7 +77,6 @@ parser.add_argument('-DR', dest="DropOut_rate", default=.3, help="drop out rate"
 parser.add_argument('-encoder_layers', dest="encoder_layers", default="64", type=str,
                     help="a list in which each element determine the size of gcn; Note: the last layer size is determine with -NofCom")
 parser.add_argument('-lr', dest="lr", default=0.005, help="model learning rate")
-parser.add_argument('-e', dest="epoch_number", default=2, help="Number of Epochs")
 parser.add_argument('-NSR', dest="negative_sampling_rate", default=1,
                     help="the rate of negative samples which should be used in each epoch; by default negative sampling wont use")
 parser.add_argument('-v', dest="Vis_step", default=50, help="model learning rate")
@@ -83,6 +87,40 @@ parser.add_argument('-Split', dest="split_the_data_to_train_test", default=True,
 parser.add_argument('-s', dest="save_embeddings_to_file", default=True, help="save the latent vector of nodes")
 
 args_kdd = parser.parse_args()
+
+print("")
+print("KDD SETING: "+str(args_kdd))
+
+
+
+###########################################################################
+parser = argparse.ArgumentParser(description='Inductive nips')
+
+parser.add_argument('-e', dest="epoch_number" , default=5, help="Number of Epochs")
+parser.add_argument('-v', dest="Vis_step", default=100, help="model learning rate")
+parser.add_argument('-redraw', dest="redraw", default=False, help="either update the log plot each step")
+parser.add_argument('-lr', dest="lr", default=0.001, help="model learning rate") # for RNN decoder use 0.0001
+parser.add_argument('-NSR', dest="negative_sampling_rate", default=1, help="the rate of negative samples which shold be used in each epoch; by default negative sampling wont use")
+parser.add_argument('-dataset', dest="dataset", default="cora", help="possible choices are:  grid, community, citeseer, lobster, DD")#citeceer: ego; DD:protein
+parser.add_argument('-NofCom', dest="num_of_comunities", default=16, help="Number of comunites")
+parser.add_argument('-s', dest="save_embeddings_to_file", default=False, help="save the latent vector of nodes")
+parser.add_argument('-graph_save_path', dest="graph_save_path", default="develope/", help="the direc to save generated synthatic graphs")
+parser.add_argument('-f', dest="use_feature" , default=True, help="either use features or identity matrix")
+parser.add_argument('-Split', dest="split_the_data_to_train_test" , default=True, help="either use features or identity matrix; for synthasis data default is False")
+parser.add_argument('-PATH', dest="PATH" , default="model", help="a string which determine the path in wich model will be saved")
+parser.add_argument('-decoder', dest="decoder" , default="FC_InnerDOTdecoder", help="the decoder type,SBMdecoder, FC_InnerDOTdecoder, GRAPHdecoder,FCdecoder,InnerDOTdecoder")
+parser.add_argument('-batchSize', dest="batchSize" , default=100, help="the size of each batch")
+parser.add_argument('-device', dest="device" , default="cuda:0", help="either use GPU or not if availabel")
+parser.add_argument('-model', dest="model" , default="kernel", help="kipf or kernel")
+parser.add_argument('-UseGPU', dest="UseGPU" , default=True, help="either use GPU or not if availabel")
+parser.add_argument('-task', dest="task" , default="linkPrediction", help="nodeClassification, graphGeneration")
+parser.add_argument('-autoencoder', dest="autoencoder" , default=True, help="nodeClassification, graphGeneration")
+parser.add_argument('-appendX', dest="appendX" , default=False, help="doese append x to Z for nodeclassification")
+args_nips = parser.parse_args()
+
+print("")
+print("NIPS SETING: "+str(args_nips))
+
 pltr = plotter.Plotter(functions=["Accuracy", "loss", "AUC"])
 
 if torch.cuda.is_available():
@@ -116,7 +154,7 @@ if ds == 'cora':
     dataCenter_kdd = DataCenter(config)
     dataCenter_kdd.load_dataSet(ds, "KDD")
     features_kdd = torch.FloatTensor(getattr(dataCenter_kdd, ds+'_feats')).to(device)
-elif ds == 'IMDB' or ds == 'ACM':
+elif ds == 'IMDB' or ds == 'ACM'or ds == 'DBLP':
     dataCenter_kdd = DataCenter(config)
     dataCenter_kdd.load_dataSet(ds, "KDD")
     features_kdd = torch.FloatTensor(getattr(dataCenter_kdd, ds+'_feats')).to(device)
@@ -127,8 +165,10 @@ elif ds == 'IMDB' or ds == 'ACM':
 
 #%% train graphSAGE and KDD model
 
+# print(features_sage)
+
 # train graphsage
-from src.models import *
+from models import *
 graphSage, classification_sage = helper.train_graphSage(dataCenter_sage, 
                                         features_sage,args_graphsage,
                                         config, device)
@@ -136,6 +176,13 @@ graphSage, classification_sage = helper.train_graphSage(dataCenter_sage,
 #%%  train inductive_kdd
 inductive_kdd = helper.train_kddModel(dataCenter_kdd, features_kdd, 
                                       args_kdd, device)
+
+
+
+
+#%%  train inductive_nips
+inductive_nips = helper.train_nipsModel(dataCenter_kdd, features_kdd, 
+                                      args_nips, device)
 
 
 
@@ -148,12 +195,34 @@ graph_dgl.add_edges(graph_dgl.nodes(), graph_dgl.nodes())  # the library does no
 std_z, m_z, z, reconstructed_adj = inductive_kdd(graph_dgl, features_kdd)
 embedding_kdd = z.detach().numpy()
 
+
+
+
+#%% get embedding of NIPS
+self_for_none = False
+full_list = getattr(dataCenter_kdd, ds+'_adj_lists')
+# print(type(features_kdd))
+# print(features_kdd)
+list_graphs_full = Datasets([full_list], self_for_none, [sparse.csr_matrix(features_kdd)])
+org_adj,x_s, node_num = list_graphs_full.get__(0, len(list_graphs_full.list_adjs), self_for_none)
+org_adj = torch.cat(org_adj).to(device)
+x_s = torch.cat(x_s)
+pos_wight = torch.true_divide(sum([x**2 for x in node_num])-org_adj.sum(),org_adj.sum())
+reconstructed_adj, prior_samples, post_mean, post_log_std, generated_kernel_val,reconstructed_adj_logit = inductive_nips(org_adj.to(device), x_s.to(device), node_num)
+embedding_nips = np.concatenate((prior_samples[0].cpu().detach().numpy(),x_s.detach().numpy()[0]),axis=1)
+
+
 #%% train classification/prediction model - NN
 trainId = getattr(dataCenter_kdd, ds + '_train')
 labels = getattr(dataCenter_kdd, ds + '_labels')
+
 res_train_sage, classifier_sage = classification.NN_all(embedding_sage[trainId, :], 
                                                              labels[trainId])
+
 res_train_kdd, classifier_kdd = classification.NN_all(embedding_kdd[trainId, :], 
+                                                           labels[trainId])
+
+res_train_nips, classifier_nips = classification.NN_all(embedding_nips[trainId, :], 
                                                            labels[trainId])
 
 #%% evaluate on whole dataset
@@ -165,10 +234,12 @@ print('#  GraphSAGE')
 print(res_train_sage[-1])
 print('#  KDD Model')
 print(res_train_kdd[-1])
-
+print('#  NIPS Model')
+print(res_train_nips[-1])
 
 labels_pred_sage = classifier_sage.predict(torch.Tensor(embedding_sage))
 labels_pred_kdd = classifier_kdd.predict(torch.Tensor(embedding_kdd))
+labels_pred_nips = classifier_nips.predict(torch.Tensor(embedding_nips))
 
 # ********************** TEST SET
 print('\n# ****************** TEST SET ******************')
@@ -177,6 +248,9 @@ print('#  GraphSAGE')
 helper.print_eval(labels[testId], labels_pred_sage[testId])
 print('#  KDD Model')
 helper.print_eval(labels[testId], labels_pred_kdd[testId])
+print('#  NIPS Model')
+helper.print_eval(labels[testId], labels_pred_nips[testId])
+
 
 # ********************** WHOLE SET
 print('\n# ****************** WHOLE SET ******************')
@@ -184,5 +258,6 @@ print('#  GraphSAGE')
 helper.print_eval(labels, labels_pred_sage)
 print('#  KDD Model')
 helper.print_eval(labels, labels_pred_kdd)
-
+print('#  NIPS Model')
+helper.print_eval(labels, labels_pred_nips)
 

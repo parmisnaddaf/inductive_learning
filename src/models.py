@@ -4,7 +4,7 @@ import random
 
 import torch.nn as nn
 import torch.nn.functional as F
-from src.utils import *
+from utils import *
 from dgl.nn.pytorch import GraphConv as GraphConv
 
 global haveedge
@@ -453,7 +453,7 @@ class multi_layer_GCN(torch.nn.Module):
         return eps.mul(std).add(mean)
 
 
-from src.utils import *
+from utils import *
 class MapedInnerProductDecoder(torch.nn.Module):
     """Decoder for using inner product of multiple transformed Z"""
 
@@ -480,6 +480,455 @@ class MapedInnerProductDecoder(torch.nn.Module):
             gen_adj.append(layer_i)
             # gen_adj.append(self.mlp_decoder[i](self.to_3D(z)))
         return torch.stack(gen_adj)
+    
+############################# NIPS MODELS ########################################
+class kernelGVAE(torch.nn.Module):
+    def __init__(self, in_feature_dim, hidden1,  latent_size, ker, decoder, device, encoder_fcc_dim = [128] , autoencoder=False):
+        super(kernelGVAE, self).__init__()
+        self.first_conv_layer = GraphConvNN(in_feature_dim, hidden1)
+        self.second_conv_layer = GraphConvNN(hidden1, hidden1)
+        self.stochastic_mean_layer = GraphConvNN(hidden1, latent_size)
+        self.stochastic_log_std_layer = GraphConvNN(hidden1, latent_size)
+        self.kernel = ker #TODO: bin and width whould be determined if kernel is his
+
+        # self.reset_parameters()
+        self.Drop = torch.nn.Dropout(0)
+        self.Drop = torch.nn.Dropout(0)
+        self.latent_dim = latent_size
+        self.mlp = None
+        self.decode = decoder
+        self.autoencoder = autoencoder
+        self.device = device
+
+        if None !=encoder_fcc_dim:
+
+            self.fnn =node_mlp(hidden1, encoder_fcc_dim)
+            self.stochastic_mean_layer = node_mlp(encoder_fcc_dim[-1], [latent_size])
+            self.stochastic_log_std_layer = node_mlp(encoder_fcc_dim[-1], [latent_size])
+
+    def forward(self, graph, features, num_node, ):
+        """
+
+        :param graph: normalized adjacency matrix of graph
+        :param features: normalized node feature matrix
+        :return:
+        """
+        samples, mean, log_std = self.encode( graph, features,self.autoencoder)
+        reconstructed_adj_logit = self.decode(samples)
+        reconstructed_adj = torch.sigmoid(reconstructed_adj_logit)
+        kernel_value = self.kernel(reconstructed_adj,num_node)
+
+        mask = torch.zeros(graph.shape)
+
+        # removing the effect of none existing nodes
+        for i in range(graph.shape[0]):
+            reconstructed_adj_logit[i, :, num_node[i]:] = -100
+            reconstructed_adj_logit[i, num_node[i]:, :] = -100
+            mask[i, :num_node[i], :num_node[i]] = 1
+            mean[i,num_node[i]:, :]=  0
+            log_std[i,num_node[i]:, :]=  0
+
+        reconstructed_adj = reconstructed_adj * mask.to(self.device)
+        # reconstructed_adj_logit  = reconstructed_adj_logit + mask_logit
+        return reconstructed_adj, samples, mean, log_std, kernel_value, reconstructed_adj_logit
+
+    def encode(self, graph, features, autoencoder):
+        h = self.first_conv_layer(graph, features)
+        h = self.Drop(h)
+        h= torch.tanh(h)
+        h = self.second_conv_layer(graph, h)
+        h = torch.tanh(h)
+        if type(self.stochastic_mean_layer) ==GraphConvNN:
+            mean = self.stochastic_mean_layer(graph, h)
+            log_std = self.stochastic_log_std_layer(graph, h)
+        else:
+            h = self.fnn(h)
+            mean = self.stochastic_mean_layer(h,activation = lambda x:x)
+            log_std = self.stochastic_log_std_layer(h,activation = lambda x:x)
+
+        if autoencoder==False:
+            sample = self.reparameterize(mean, log_std, node_num)
+        else:
+            sample = mean*1
+        return sample, mean, log_std
+
+
+    def reparameterize(self, mean, log_std, node_num):
+        # std = torch.exp(log_std)
+        # eps = torch.randn_like(std)
+        # return eps.mul(std).add(mean)
+
+        var = torch.exp(log_std).pow(2)
+        eps = torch.randn_like(var)
+        sample = eps.mul(var).add(mean)
+
+        for i, node_size in enumerate(node_num):
+            sample[i][node_size:,:]=0
+        return sample
+
+
+class kernel(torch.nn.Module):
+    """
+     this class return a list of kernel ordered by keywords in kernel_type
+    """
+    def __init__(self, **ker):
+        
+        """
+        :param ker:
+        kernel_type; a list of string which determine needed kernels
+        """
+        super(kernel, self).__init__()
+        self.kernel_type = ker.get("kernel_type")
+        kernel_set = set(self.kernel_type)
+        
+        
+        self.device = ker.get("device")
+
+        if "in_degree_dist" in kernel_set or "out_degree_dist" in kernel_set:
+            self.degree_hist = Histogram( self.device, ker.get("degree_bin_width").to(self.device), ker.get("degree_bin_center").to(self.device))
+
+        if "RPF" in kernel_set:
+            self.num_of_steps = ker.get("step_num")
+            self.hist = Histogram(self.device, ker.get("bin_width"), ker.get("bin_center") )
+
+        if "trans_matrix" in kernel_set:
+            self.num_of_steps = ker.get("step_num")
+
+
+
+    def forward(self,adj, num_nodes):
+        vec = self.kernel_function(adj, num_nodes)
+        # return self.hist(vec)
+        return vec
+
+    def kernel_function(self, adj, num_nodes): # TODO: another var for keeping the number of moments
+        # ToDo: here we assumed the matrix is symetrix(undirected) which might not
+        vec = []  # feature vector
+        for kernel in self.kernel_type:
+            if "in_degree_dist" == kernel:
+                degree_hit = []
+                for i in range(adj.shape[0]):
+                    degree = adj[i,:num_nodes[i],:num_nodes[i]].sum(1).view(1, num_nodes[i])
+                    degree_hit.append(self.degree_hist(degree.to(self.device)))
+                vec.append(torch.cat(degree_hit))
+            if "out_degree_dist" == kernel:
+                degree_hit = []
+                for i in range(adj.shape[0]):
+                    degree = adj[i, :num_nodes[i], :num_nodes[i]].sum(0).view(1, num_nodes[i])
+                    degree_hit.append(self.degree_hist(degree))
+                vec.append(torch.cat(degree_hit))
+            if "RPF" == kernel:
+                raise("should be changed") #ToDo: need to be fixed
+                tr_p = self.S_step_trasition_probablity( self.device, adj, num_nodes, self.num_of_steps)
+                for i in range(len(tr_p)):
+                    vec.append(self.hist(torch.diag(tr_p[i])))
+
+            if "trans_matrix" == kernel:
+                vec.extend(self.S_step_trasition_probablity(self.device, adj, num_nodes, self.num_of_steps))
+                # vec = torch.cat(vec,1)
+
+            if "tri" == kernel:  # compare the nodes degree in the given order
+                tri, square = self.tri_square_count(adj)
+                vec.append(tri), vec.append(square)
+
+        return vec
+
+    def tri_square_count(self, adj):
+        ind = torch.eye(adj[0].shape[0]).to(device)
+        adj = adj - ind
+        two__ = torch.matmul(adj, adj)
+        tri_ = torch.matmul(two__, adj)
+        squares = torch.matmul(two__, two__)
+        return (torch.diagonal(tri_, dim1=1, dim2=2), torch.diagonal(squares, dim1=1, dim2=2))
+
+    def S_step_trasition_probablity(self, device, adj, num_node, s=4):
+        """
+         this method take an adjacency matrix and return its j<s adjacency matrix, sorted, in a list
+        :param s: maximum step
+        :param Adj: adjacency matrixy of the grap
+        :return: a list in whcih the ith elemnt is the i srep transition probablity
+        """
+        mask = torch.zeros(adj.shape).to(device)
+        for i in range(adj.shape[0]):
+            mask[i,:num_node[i],:num_node[i]] = 1
+
+        p1 = adj.to(device)
+        p1 = p1 * mask
+        # ind = torch.eye(adj[0].shape[0])
+        # p1 = p1 - ind
+        TP_list = []
+        p1 = p1*(p1.sum(2).float().clamp(min=1) ** -1).view(adj.shape[0],adj.shape[1], 1)
+
+        # p1[p1!=p1] = 0
+        # p1 = p1 * mask
+
+        if s>0:
+            # TP_list.append(torch.matmul(p1,p1))
+            TP_list.append( p1)
+        for i in range(s-1):
+            TP_list.append(torch.matmul(p1, TP_list[-1] ))
+        return TP_list
+
+
+
+class Histogram(torch.nn.Module):
+    def __init__(self, device, bin_width = None, bin_centers = None):
+        
+        super(Histogram, self).__init__()
+        self.bin_width = bin_width.to(device)
+        self.bin_center = bin_centers.to(device)
+        if self.bin_width == None:
+            self.prism()
+        else:
+            self.bin_num = self.bin_width.shape[0]
+
+    def forward(self, vec):
+        score_vec = vec.view(vec.shape[0],1, vec.shape[1], ) - self.bin_center
+        # score_vec = vec-self.bin_center
+        score_vec = 1-torch.abs(score_vec)*self.bin_width
+        score_vec = torch.relu(score_vec)
+        return score_vec.sum(2)
+
+    def prism(self):
+        pass
+    
+    
+class FC_InnerDOTdecoder(torch.nn.Module):
+    def __init__(self,input,output,laten_size ,layer=[256,1024,256]):
+        super(FC_InnerDOTdecoder,self).__init__()
+        self.lamda = torch.nn.Parameter(torch.Tensor(laten_size, laten_size))
+        layer = [input]+layer + [output]
+        self.layers = torch.nn.ModuleList([torch.nn.Linear(layer[i],layer[i+1]) for i in range(len(layer)-1)])
+        self.reset_parameters()
+    # def forward(self,Z):
+    #     shape = Z.shape
+    #     z = Z.reshape(shape[0],-1)
+    #     for i in range(len(self.layers)):
+    #         z  = self.layers[i](z)
+    #         z = torch.tanh(z)
+    #     # Z = torch.sigmoid(Z)
+    # return z.reshape(shape[0], shape[-2], shape[-2])
+    def forward(self, in_tensor, activation=torch.nn.ReLU()):
+        h = in_tensor.reshape(in_tensor.shape[0],-1)
+        for i in range(len(self.layers)):
+            # if self.norm_layers != None:
+            #     if len(h.shape) == 2:
+            #         h = self.norm_layers[i](h)
+            #     else:
+            #         shape = h.shape
+            #         h = h.reshape(-1, h.shape[-1])
+            #         h = self.norm_layers[i](h)
+            #         h = h.reshape(shape)
+            # h = self.dropout(h)
+            h = self.layers[i](h)
+            if ((i!=len(self.layers))):
+              h = activation(h)
+        h = h.reshape(in_tensor.shape[0], in_tensor.shape[1],-1)
+        return torch.matmul(torch.matmul(h,self.lamda), h.permute(0, 2, 1))
+
+    def reset_parameters(self):
+        self.lamda = torch.nn.init.xavier_uniform_(self.lamda)
+class InnerDOTdecoder(torch.nn.Module):
+    def __init__(self):
+        super(InnerDOTdecoder,self).__init__()
+    # def forward(self,Z):
+    #     shape = Z.shape
+    #     z = Z.reshape(shape[0],-1)
+    #     for i in range(len(self.layers)):
+    #         z  = self.layers[i](z)
+    #         z = torch.tanh(z)
+    #     # Z = torch.sigmoid(Z)
+    # return z.reshape(shape[0], shape[-2], shape[-2])
+    def forward(self, h):
+       return torch.matmul(h, h.permute(0, 2, 1))
+
+
+
+
+class GraphConvNN(torch.nn.Module):
+    r"""Apply graph convolution over an input signal.
+
+    Graph convolution is introduced in `GCN <https://arxiv.org/abs/1609.02907>`__
+    and can be described as below:
+
+    .. math::
+      h_i^{(l+1)} = \sigma(b^{(l)} + \sum_{j\in\mathcal{N}(i)}\frac{1}{c_{ij}}h_j^{(l)}W^{(l)})
+
+    where :math:`\mathcal{N}(i)` is the neighbor set of node :math:`i`. :math:`c_{ij}` is equal
+    to the product of the square root of node degrees:
+    :math:`\sqrt{|\mathcal{N}(i)|}\sqrt{|\mathcal{N}(j)|}`. :math:`\sigma` is an activation
+    function.
+
+    The model parameters are initialized as in the
+    `original implementation <https://github.com/tkipf/gcn/blob/master/gcn/layers.py>`__ where
+    the weight :math:`W^{(l)}` is initialized using Glorot uniform initialization
+    and the bias is initialized to be zero.
+
+    Notes
+    -----
+    Zero in degree nodes could lead to invalid normalizer. A common practice
+    to avoid this is to add a self-loop for each node in the graph, which
+    can be achieved by:
+
+    >>> g = ... # some DGLGraph
+    >>> g.add_edges(g.nodes(), g.nodes())
+
+
+    Parameters
+    ----------
+    in_feats : int
+        Input feature size.
+    out_feats : int
+        Output feature size.
+    norm : str, optional
+        How to apply the normalizer. If is `'right'`, divide the aggregated messages
+        by each node's in-degrees, which is equivalent to averaging the received messages.
+        If is `'none'`, no normalization is applied. Default is `'both'`,
+        where the :math:`c_{ij}` in the paper is applied.
+    weight : bool, optional
+        If True, apply a linear layer. Otherwise, aggregating the messages
+        without a weight matrix.
+    bias : bool, optional
+        If True, adds a learnable bias to the output. Default: ``True``.
+    activation: callable activation function/layer or None, optional
+        If not None, applies an activation function to the updated node features.
+        Default: ``None``.
+
+    Attributes
+    ----------
+    weight : torch.Tensor
+        The learnable weight tensor.
+    bias : torch.Tensor
+        The learnable bias tensor.
+    """
+    def __init__(self,
+                 in_feats,
+                 out_feats,
+                 norm='both',
+                 weight=True,
+                 bias=False,
+                 activation=None):
+        super(GraphConvNN, self).__init__()
+        if norm not in ('none', 'both', 'right'):
+            raise ('Invalid norm value. Must be either "none", "both" or "right".'
+                           ' But got "{}".'.format(norm))
+        self._in_feats = in_feats
+        self._out_feats = out_feats
+        self._norm = norm
+
+        if weight:
+            self.weight = torch.nn.Parameter(torch.Tensor(in_feats, out_feats))
+        else:
+            self.register_parameter('weight', None)
+
+        if bias:
+            self.bias = torch.nn.Parameter(torch.Tensor(out_feats))
+        else:
+            self.register_parameter('bias', None)
+
+        self.reset_parameters()
+
+        self._activation = activation
+
+    def reset_parameters(self):
+        """Reinitialize learnable parameters."""
+        if self.weight is not None:
+            torch.nn.init.xavier_uniform_(self.weight)
+        if self.bias is not None:
+            torch.nn.init.zeros_(self.bias)
+
+    def forward(self, graph, feat, weight=None):
+        r"""Compute graph convolution.
+
+        Notes
+        -----
+        * Input shape: :math:`(N, *, \text{in_feats})` where * means any number of additional
+          dimensions, :math:`N` is the number of nodes.
+        * Output shape: :math:`(N, *, \text{out_feats})` where all but the last dimension are
+          the same shape as the input.
+        * Weight shape: "math:`(\text{in_feats}, \text{out_feats})`.
+
+        Parameters
+        ----------
+        graph : DGLGraph
+            The adg of graph. It should include self loop
+        feat : torch.Tensor
+            The input feature
+        weight : torch.Tensor, optional
+            Optional external weight tensor.
+
+        Returns
+        -------
+        torch.Tensor
+            The output feature
+        """
+
+
+        if self._norm == 'both':
+            degs = graph.sum(-2).float().clamp(min=1)
+            norm = torch.pow(degs, -0.5)
+            shp = norm.shape + (1,)
+            norm = torch.reshape(norm, shp)
+            feat = feat * norm
+
+        if weight is not None:
+            if self.weight is not None:
+                raise ('External weight is provided while at the same time the'
+                               ' module has defined its own weight parameter. Please'
+                               ' create the module with flag weight=False.')
+        else:
+            weight = self.weight
+
+        if self._in_feats > self._out_feats:
+            # mult W first to reduce the feature size for aggregation.
+            if weight is not None:
+                feat = torch.matmul(feat, weight)
+            # graph.srcdata['h'] = feat
+            # graph.update_all(fn.copy_src(src='h', out='m'),
+            #                  fn.sum(msg='m', out='h'))
+            rst = torch.matmul(graph, feat)
+        else:
+            # aggregate first then mult W
+            # graph.srcdata['h'] = feat
+            # graph.update_all(fn.copy_src(src='h', out='m'),
+            #                  fn.sum(msg='m', out='h'))
+            # rst = graph.dstdata['h']
+            rst = torch.matmul(graph, feat)
+            if weight is not None:
+                rst = torch.matmul(rst, weight)
+
+        if self._norm != 'none':
+            degs = graph.sum(-1).float().clamp(min=1)
+            if self._norm == 'both':
+                norm = torch.pow(degs, -0.5)
+            else:
+                norm = 1.0 / degs
+            shp = norm.shape + (1,)
+            norm = torch.reshape(norm, shp)
+            rst = rst * norm
+
+        if self.bias is not None:
+            rst = rst + self.bias
+
+        if self._activation is not None:
+            rst = self._activation(rst)
+
+        return rst
+
+    def extra_repr(self):
+        """Set the extra representation of the module,
+        which will come into effect when printing the model.
+        """
+        summary = 'in={_in_feats}, out={_out_feats}'
+        summary += ', normalization={_norm}'
+        if '_activation' in self.__dict__:
+            summary += ', activation={_activation}'
+        return summary.format(**self.__dict__)
+
+
+
+         
+
 
 
          

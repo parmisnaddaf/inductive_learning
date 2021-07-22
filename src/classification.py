@@ -19,7 +19,7 @@ from torch.utils.data import TensorDataset
 #import matplotlib
 #matplotlib.use('TkAgg')
 
-from src import plotter
+import plotter
 
 
 def get_metrices(labels_test, labels_pred):

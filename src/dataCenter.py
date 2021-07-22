@@ -259,7 +259,53 @@ class DataCenter(object):
                 setattr(self, dataSet+'_adj_lists', adj[:index,:index])
                 setattr(self, dataSet+'_edge_labels', edge_labels[:index,:index].toarray())
             
+            elif dataSet == "DBLP":
 
+                obj = []
+
+                adj_file_name = "/Users/parmis/Desktop/indd/inductive_learning/DBLP/edges.pkl"
+            
+            
+                with open(adj_file_name, 'rb') as f:
+                        obj.append(pkl.load(f))
+            
+                # merging diffrent edge type into a single adj matrix
+                adj = sp.csr_matrix(obj[0][0].shape)
+                for matrix in obj[0]:
+                    adj +=matrix
+            
+                matrix = obj[0]
+                edge_labels = matrix[0] + matrix[1]
+                edge_labels += (matrix[2] + matrix[3])*2
+            
+                node_label= []
+                in_1 = matrix[0].nonzero()[0].min()
+                in_2 = matrix[0].nonzero()[0].max()+1
+                in_3 = matrix[3].nonzero()[0].max()+1
+                matrix[0].nonzero()
+                node_label.extend([0 for i in range(in_1)])
+                node_label.extend([1 for i in range(in_1,in_2)])
+                node_label.extend([2 for i in range(in_2, in_3)])
+            
+            
+                obj = []
+                with open("/Users/parmis/Desktop/indd/inductive_learning/DBLP/node_features.pkl", 'rb') as f:
+                    obj.append(pkl.load(f))
+                feature = sp.csr_matrix(obj[0])
+                
+                
+                index = -1000
+                test_indexs, val_indexs, train_indexs = self._split_data(feature[:index].shape[0])
+                                
+                setattr(self, dataSet+'_test', test_indexs)
+                setattr(self, dataSet+'_val', val_indexs)
+                setattr(self, dataSet+'_train', train_indexs)
+    
+                setattr(self, dataSet+'_feats', feature[:index].toarray())
+                setattr(self, dataSet+'_labels', np.array(node_label[:index]))
+                setattr(self, dataSet+'_adj_lists', adj[:index,:index].toarray())
+                setattr(self, dataSet+'_edge_labels', edge_labels[:index].toarray())
+            
 
     def _split_data(self, num_nodes, test_split = 3, val_split = 6):
         rand_indices = np.random.permutation(num_nodes)
@@ -279,7 +325,7 @@ class DataCenter(object):
 convert KDD dataset to GraphSAGE one
 """
 def datasetConvert(dataCenter_kdd, ds):
-    if ds == 'IMDB' or ds == 'ACM':
+    if ds == 'IMDB' or ds == 'ACM' or ds == 'DBLP':
         dataCenter_sage = copy.deepcopy(dataCenter_kdd)
         
         adj_lists = defaultdict(set)
@@ -288,6 +334,7 @@ def datasetConvert(dataCenter_kdd, ds):
             for col in range(len(adj_kdd[0])):
                 if adj_kdd[row][col] == 1:
                     adj_lists[row].add(col)
+        print(adj_lists)
                 
         setattr(dataCenter_sage, ds+'_adj_lists', adj_lists)
     return dataCenter_sage

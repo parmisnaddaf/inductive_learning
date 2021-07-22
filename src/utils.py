@@ -13,6 +13,7 @@ import scipy.sparse as sp
 import numpy as np
 import torch.nn.functional as F
 from numpy.random import default_rng
+from scipy.sparse import lil_matrix
 
 
 def evaluate(dataCenter, ds, graphSage, classification, device, max_vali_f1, name, cur_epoch):
@@ -166,6 +167,7 @@ def apply_model(dataCenter, ds, graphSage, classification, unsupervised_loss, b_
         
         # feed nodes batch to the graphSAGE
         # returning the nodes embeddings
+
         embs_batch = graphSage(nodes_batch)
 
         if learn_method == 'sup':
@@ -556,9 +558,226 @@ def make_test_train(adj, feat, split = []):
 
     return adj_train , adj_val, adj_test, feat_train, feat_val, feat_test
         
+####################### NIPS UTILS ##########################
+
+
+
+def test_(number_of_samples, model ,graph_size,max_size, path_to_save_g, device, remove_self=True):
+    import os
+    if not os.path.exists(path_to_save_g):
+        os.makedirs(path_to_save_g)
+    model.eval()
+    generated_graph_list = []
+    if not os.path.isdir(path_to_save_g):
+        os.makedirs(path_to_save_g)
+    for g_size in graph_size:
+        for j in range(number_of_samples):
+            z = torch.tensor(numpy.random.normal(size=[1, max_size, model.latent_dim]))
+            z = torch.randn_like(z)
+            start_time = time.time()
+            if type(model.decode) == GRAPHITdecoder:
+                pass
+                # adj_logit = model.decode(z.float(), features)
+            elif type(model.decode) == RNNDecoder:
+                adj_logit = model.decode(z.to(device).float(), [g_size])
+            elif type(model.decode) in (FCdecoder, FC_InnerDOTdecoder):
+                g_size = max_size
+                z = torch.tensor(numpy.random.normal(size=[1, max_size, model.latent_dim]))
+                z = torch.randn_like(z)
+                adj_logit = model.decode(z.to(device).float())
+            else:
+                adj_logit = model.decode(z.to(device).float())
+            print("--- %s seconds ---" % (time.time() - start_time))
+            reconstructed_adj = torch.sigmoid(adj_logit)
+            sample_graph = reconstructed_adj[0].cpu().detach().numpy()
+            sample_graph = sample_graph[:g_size,:g_size]
+            sample_graph[sample_graph >= 0.5] = 1
+            sample_graph[sample_graph < 0.5] = 0
+            G = nx.from_numpy_matrix(sample_graph)
+            # generated_graph_list.append(G)
+            f_name = path_to_save_g+ str(g_size)+ str(j) + dataset
+            # plot and save the generated graph
+            plotter.plotG(G, "generated" + dataset, file_name=f_name)
+            if remove_self:
+                G.remove_edges_from(nx.selfloop_edges(G))
+            G.remove_nodes_from(list(nx.isolates(G)))
+            generated_graph_list.append(G)
+            plotter.plotG(G, "generated" + dataset, file_name=f_name+"_ConnectedComponnents")
+    return generated_graph_list
+
+            # save to pickle file
+
+
+
+def OptimizerVAE(reconstructed_adj, reconstructed_kernel_val, targert_adj, target_kernel_val, log_std, mean, num_nodes, alpha, reconstructed_adj_logit, pos_wight, norm,node_num, ignore_indexes=None ):
+    if ignore_indexes ==None:
+        loss = norm*torch.nn.functional.binary_cross_entropy_with_logits(reconstructed_adj_logit.float(), targert_adj.float(),pos_weight=pos_wight)
+    else:
+        loss = norm*torch.nn.functional.binary_cross_entropy_with_logits(reconstructed_adj_logit.float(), targert_adj.float(),pos_weight=pos_wight,
+                                                                   reduction='none')
+        loss[0][ignore_indexes[1], ignore_indexes[0]] = 0
+        loss = loss.mean()
+    norm =    mean.shape[0] * mean.shape[1] * mean.shape[2]
+    kl = (1/norm)* -0.5 * torch.sum(1+2*log_std - mean.pow(2)-torch.exp(log_std).pow(2))
+
+    acc = (reconstructed_adj.round() == targert_adj).sum()/float(reconstructed_adj.shape[0]*reconstructed_adj.shape[1]*reconstructed_adj.shape[2])
+    kernel_diff = 0
+    each_kernel_loss = []
+    for i in range(len(target_kernel_val)):
+        l = torch.nn.MSELoss()
+        step_loss = l(reconstructed_kernel_val[i].float(), target_kernel_val[i].float())
+        each_kernel_loss.append(step_loss.cpu().detach().numpy()*alpha[i])
+        kernel_diff += l(reconstructed_kernel_val[i].float(), target_kernel_val[i].float())*alpha[i]
+    each_kernel_loss.append(loss.cpu().detach().numpy()*alpha[-2])
+    each_kernel_loss.append(kl.cpu().detach().numpy()*alpha[-1])
+    kernel_diff += loss*alpha[-2]
+    kernel_diff += kl * alpha[-1]
+    return kl , loss, acc, kernel_diff, each_kernel_loss
+
+def getBack(var_grad_fn):
+    print(var_grad_fn)
+    for n in var_grad_fn.next_functions:
+        if n[0]:
+            try:
+                tensor = getattr(n[0], 'variable')
+                print(n[0])
+                print('Tensor with grad found:', tensor)
+                print(' - gradient:', tensor.grad)
+                print()
+            except AttributeError as e:
+                getBack(n[0])
+
     
-    
-    
+
+
+class Datasets():
+  'Characterizes a dataset for PyTorch'
+  def __init__(self, list_adjs,self_for_none, list_Xs, padding =True, Max_num = None):
+        """
+        :param list_adjs: a list of adjacency in sparse format
+        :param list_Xs: a list of node feature matrix
+        """
+        'Initialization'
+        self.paading = padding
+        self.list_Xs = list_Xs
+        self.list_adjs = list_adjs
+        self.toatl_num_of_edges = 0
+        self.max_num_nodes = 0
+        for i, adj in enumerate(list_adjs):
+            list_adjs[i] =  adj - sp.dia_matrix((adj.diagonal()[np.newaxis, :], [0]), shape=adj.shape)
+            list_adjs[i] += sp.eye(list_adjs[i].shape[0])
+            if self.max_num_nodes < adj.shape[0]:
+                self.max_num_nodes = adj.shape[0]
+            self.toatl_num_of_edges += adj.sum().item()
+            # if list_Xs!=None:
+            #     self.list_adjs[i], list_Xs[i] = self.permute(list_adjs[i], list_Xs[i])
+            # else:
+            #     self.list_adjs[i], _ = self.permute(list_adjs[i], None)
+        if Max_num!=None:
+            self.max_num_nodes = Max_num
+        self.processed_Xs = []
+        self.processed_adjs = []
+        self.num_of_edges = []
+        for i in range(self.__len__()):
+            a,x,n = self.process(i,self_for_none)
+            self.processed_Xs.append(x)
+            self.processed_adjs.append(a)
+            self.num_of_edges.append(n)
+        if list_Xs!=None:
+            self.feature_size = list_Xs[0].shape[1]
+        else:
+            self.feature_size = self.max_num_nodes
+
+  def get(self, shuffle= True):
+      indexces = list(range(self.__len__()))
+      random.shuffle()
+      return [self.processed_adjs[i] for i in indexces], [self.processed_Xs[i] for i in indexces]
+
+  def get__(self,from_, to_, self_for_none):
+      adj_s = []
+      x_s = []
+      num_nodes = []
+      # padded_to = max([self.list_adjs[i].shape[1] for i in range(from_, to_)])
+      # padded_to = 225
+      for i in range(from_, to_):
+          adj, x, num_node = self.process(i, self_for_none)#, padded_to)
+          adj_s.append(adj)
+          x_s.append(x)
+          num_nodes.append(num_node)
+      return adj_s, x_s, num_nodes
+
+
+  def __len__(self):
+        'Denotes the total number of samples'
+        return len(self.list_adjs)
+
+  def process(self,index,self_for_none, padded_to=None,):
+
+      num_nodes = self.list_adjs[index].shape[0]
+      if self.paading == True:
+          max_num_nodes = self.max_num_nodes if padded_to==None else padded_to
+      else:
+          max_num_nodes = num_nodes
+      adj_padded = lil_matrix((max_num_nodes,max_num_nodes))  # make the size equal to maximum graph
+      adj_padded[:num_nodes, :num_nodes] = self.list_adjs[index][:, :]
+      adj_padded -= sp.dia_matrix((adj_padded.diagonal()[np.newaxis, :], [0]), shape=adj_padded.shape)
+      if self_for_none:
+        adj_padded += sp.eye(max_num_nodes)
+      else:
+        adj_padded[:num_nodes, :num_nodes] += sp.eye(num_nodes)
+      # adj_padded+= sp.eye(max_num_nodes)
+
+
+
+
+      if self.list_Xs == None:
+          # if the feature is not exist we use identical matrix
+          X = np.identity( max_num_nodes)
+
+      else:
+          #ToDo: deal with data with diffrent number of nodes
+          X = self.list_Xs[index].toarray()
+
+      # adj_padded, X = self.permute(adj_padded, X)
+
+      # Converting sparse matrix to sparse tensor
+      coo = adj_padded.tocoo()
+      values = coo.data
+      indices = np.vstack((coo.row, coo.col))
+      i = torch.LongTensor(indices)
+      v = torch.FloatTensor(values)
+      shape = coo.shape
+      adj_padded = torch.sparse.FloatTensor(i, v, torch.Size(shape)).to_dense()
+      X = torch.tensor(X, dtype=torch.float32)
+
+      return adj_padded.reshape(1,*adj_padded.shape), X.reshape(1, *X.shape), num_nodes
+
+  def permute(self, list_adj, X):
+            p = list(range(list_adj.shape[0]))
+            np.random.shuffle(p)
+            # for i in range(list_adj.shape[0]):
+            #     list_adj[:, i] = list_adj[p, i]
+            #     X[:, i] = X[p, i]
+            # for i in range(list_adj.shape[0]):
+            #     list_adj[i, :] = list_adj[i, p]
+            #     X[i, :] = X[i, p]
+            list_adj[:, :] = list_adj[p, :]
+            list_adj[:, :] = list_adj[:, p]
+            if X !=None:
+                X[:, :] = X[p, :]
+                X[:, :] = X[:, p]
+            return list_adj , X
+
+  def shuffle(self):
+      indx = list(range(len(self.list_adjs)))
+      np.random.shuffle(indx)
+      if  self.list_Xs !=None:
+        self.list_Xs=[self.list_Xs[i] for i in indx]
+      self.list_adjs=[self.list_adjs[i] for i in indx]
+  def __getitem__(self, index):
+        'Generates one sample of data'
+        # return self.processed_adjs[index], self.processed_Xs[index],torch.tensor(self.list_adjs[index].todense(), dtype=torch.float32)
+        return self.processed_adjs[index], self.processed_Xs[index]
 
 
 
