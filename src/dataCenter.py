@@ -263,7 +263,7 @@ class DataCenter(object):
 
                 obj = []
 
-                adj_file_name = "/Users/parmis/Desktop/indd/inductive_learning/DBLP/edges.pkl"
+                adj_file_name = "/local-scratch/parmis/indd/inductive_learning/DBLP/edges.pkl"
             
             
                 with open(adj_file_name, 'rb') as f:
@@ -289,7 +289,7 @@ class DataCenter(object):
             
             
                 obj = []
-                with open("/Users/parmis/Desktop/indd/inductive_learning/DBLP/node_features.pkl", 'rb') as f:
+                with open("/local-scratch/parmis/indd/inductive_learning/DBLP/node_features.pkl", 'rb') as f:
                     obj.append(pkl.load(f))
                 feature = sp.csr_matrix(obj[0])
                 
@@ -334,7 +334,6 @@ def datasetConvert(dataCenter_kdd, ds):
             for col in range(len(adj_kdd[0])):
                 if adj_kdd[row][col] == 1:
                     adj_lists[row].add(col)
-        print(adj_lists)
                 
         setattr(dataCenter_sage, ds+'_adj_lists', adj_lists)
     return dataCenter_sage

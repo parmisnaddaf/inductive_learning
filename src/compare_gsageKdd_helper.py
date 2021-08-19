@@ -216,7 +216,6 @@ def train_kddModel(dataCenter, features, args, device):
                            num_of_relations, encoder=encoder_model,
                            decoder=decoder_model)  # parameter namimng, it should be dimentionality of distriburion
     
-    print(model)
 
     optimizer = torch.optim.Adam(model.parameters(), lr)
     
@@ -376,7 +375,7 @@ def train_nipsModel(dataCenter, features, args, device):
     # ToDo: both bin's center and widtg also maximum value of it should be determinde auomaticly
     
     kernel_model = kernel(kernel_type = kernl_type, step_num = step_num,
-                bin_width= bin_width, bin_center=bin_center, degree_bin_center=degree_center, degree_bin_width=degree_width)
+                bin_width= bin_width, bin_center=bin_center, degree_bin_center=degree_center, degree_bin_width=degree_width, device=device)
     # 225#
     in_feature_dim = list_graphs.feature_size # ToDo: consider none Synthasis data
     print("Feature dim is: ", in_feature_dim)
@@ -404,7 +403,6 @@ def train_nipsModel(dataCenter, features, args, device):
     optimizer = torch.optim.Adam(model.parameters(), lr)
     
     num_nodes = list_graphs.max_num_nodes
-    print("NUM NODES IS:  ", num_nodes)
     #ToDo Check the effect of norm and pos weight
     
     

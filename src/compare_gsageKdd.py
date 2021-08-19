@@ -33,7 +33,7 @@ parser = argparse.ArgumentParser(description='pytorch version of GraphSAGE')
 
 
 parser.add_argument('--epochs', type=int, default=5)
-parser.add_argument('--dataSet', type=str, default='cora')
+parser.add_argument('--dataSet', type=str, default='ACM')
 parser.add_argument('--agg_func', type=str, default='MAX')
 parser.add_argument('--b_sz', type=int, default=400)
 parser.add_argument('--seed', type=int, default=123)
@@ -57,7 +57,7 @@ parser = argparse.ArgumentParser(description='Inductive KDD')
 
 parser.add_argument('-e', dest="epoch_number", default=5, help="Number of Epochs")
 parser.add_argument('--model', type=str, default='KDD')
-parser.add_argument('--dataSet', type=str, default='cora')
+parser.add_argument('--dataSet', type=str, default='ACM')
 parser.add_argument('--seed', type=int, default=123)
 parser.add_argument('-num_node', dest="num_node", default=-1, type=str,
                     help="the size of subgraph which is sampled; -1 means use the whule graph")
@@ -97,11 +97,11 @@ print("KDD SETING: "+str(args_kdd))
 parser = argparse.ArgumentParser(description='Inductive nips')
 
 parser.add_argument('-e', dest="epoch_number" , default=5, help="Number of Epochs")
+parser.add_argument('-dataset', dest="dataset", default="ACM", help="possible choices are:  grid, community, citeseer, lobster, DD")#citeceer: ego
 parser.add_argument('-v', dest="Vis_step", default=100, help="model learning rate")
 parser.add_argument('-redraw', dest="redraw", default=False, help="either update the log plot each step")
 parser.add_argument('-lr', dest="lr", default=0.001, help="model learning rate") # for RNN decoder use 0.0001
 parser.add_argument('-NSR', dest="negative_sampling_rate", default=1, help="the rate of negative samples which shold be used in each epoch; by default negative sampling wont use")
-parser.add_argument('-dataset', dest="dataset", default="cora", help="possible choices are:  grid, community, citeseer, lobster, DD")#citeceer: ego; DD:protein
 parser.add_argument('-NofCom', dest="num_of_comunities", default=16, help="Number of comunites")
 parser.add_argument('-s', dest="save_embeddings_to_file", default=False, help="save the latent vector of nodes")
 parser.add_argument('-graph_save_path', dest="graph_save_path", default="develope/", help="the direc to save generated synthatic graphs")
@@ -124,14 +124,13 @@ print("NIPS SETING: "+str(args_nips))
 pltr = plotter.Plotter(functions=["Accuracy", "loss", "AUC"])
 
 if torch.cuda.is_available():
-	if not args.cuda:
-		print("WARNING: You have a CUDA device, so you should probably run with --cuda")
-	else:
-		device_id = torch.cuda.current_device()
-		print('using device', device_id, torch.cuda.get_device_name(device_id))
+	device_id = torch.cuda.current_device()
+	print('using device', device_id, torch.cuda.get_device_name(device_id))
+else:
+    device_id = 'CPU'
 
-device = torch.device("cpu")
-# print('DEVICE:', device)
+device = torch.device(device_id)
+print('DEVICE:', device)
 
 
 #%% load config
@@ -167,6 +166,10 @@ elif ds == 'IMDB' or ds == 'ACM'or ds == 'DBLP':
 
 # print(features_sage)
 
+# zeros = np.zeros((features_kdd.shape[0], 128),  dtype= np.float32)
+# x = np.concatenate((features_kdd, zeros), axis=1).astype(np.float32)
+# features_kdd = torch.from_numpy(x)
+
 # train graphsage
 from models import *
 graphSage, classification_sage = helper.train_graphSage(dataCenter_sage, 
@@ -187,10 +190,40 @@ inductive_nips = helper.train_nipsModel(dataCenter_kdd, features_kdd,
 
 
 #%% get embedding of GraphSAGE
+
+
 embedding_sage = get_gnn_embeddings(graphSage, dataCenter_sage, ds)
 
 #%% get embedding of KDD
-graph_dgl = dgl.from_scipy(sparse.csr_matrix(getattr(dataCenter_kdd, ds+'_adj_lists')))
+
+# GET TRAIN EMBEDDINGS
+features_kdd = torch.FloatTensor(getattr(dataCenter_kdd, ds+'_feats'))
+trainId = getattr(dataCenter_kdd, ds + '_train')
+labels = getattr(dataCenter_kdd, ds + '_labels')
+adj_list = sparse.csr_matrix(getattr(dataCenter_kdd, ds+'_adj_lists'))
+adj_list_train = sparse.csr_matrix(getattr(dataCenter_kdd, ds+'_adj_lists'))[trainId]
+adj_list_train = adj_list_train[:, trainId]
+graph_dgl = dgl.from_scipy(adj_list_train)
+graph_dgl.add_edges(graph_dgl.nodes(), graph_dgl.nodes())  # the library does not add self-loops  
+std_z, m_z, z, reconstructed_adj = inductive_kdd(graph_dgl, features_kdd[trainId])
+embedding_kdd_train = z.detach().numpy()
+
+
+# features_kdd = features_kdd.cpu().detach().numpy()
+# for i , idd in enumerate(trainId):
+#     features_kdd[idd][-128:] = embedding_kdd_train[i]
+# features_kdd = torch.from_numpy(features_kdd)
+
+
+features_kdd = features_kdd.cpu().detach().numpy()
+for i , idd in enumerate(trainId):
+    features_kdd[idd] = np.pad(embedding_kdd_train[i], (0, features_kdd.shape[1] - embedding_kdd_train.shape[1]), 'constant', constant_values=(0,0))
+features_kdd = torch.from_numpy(features_kdd)
+
+
+# GET ALL EMBEDDINGS
+adj_list = sparse.csr_matrix(getattr(dataCenter_kdd, ds+'_adj_lists'))
+graph_dgl = dgl.from_scipy(adj_list)
 graph_dgl.add_edges(graph_dgl.nodes(), graph_dgl.nodes())  # the library does not add self-loops  
 std_z, m_z, z, reconstructed_adj = inductive_kdd(graph_dgl, features_kdd)
 embedding_kdd = z.detach().numpy()
@@ -198,16 +231,58 @@ embedding_kdd = z.detach().numpy()
 
 
 
+
 #%% get embedding of NIPS
+
 self_for_none = False
 full_list = getattr(dataCenter_kdd, ds+'_adj_lists')
-# print(type(features_kdd))
-# print(features_kdd)
+trainId = getattr(dataCenter_kdd, ds + '_train')
+features_kdd = torch.FloatTensor(getattr(dataCenter_kdd, ds+'_feats'))
+
+
+# GET TRAIN EMBEDDINGS
+
+full_list_train = full_list[trainId]
+full_list_train = full_list_train[:, trainId]
+num_zeros = len(full_list) - len(full_list_train)
+mask_zeros_rows = np.zeros((num_zeros, len(full_list_train)))
+full_list_train = np.concatenate((full_list_train, mask_zeros_rows), axis=0)
+mask_zeros_cols = np.zeros((len(full_list_train), num_zeros))
+full_list_train = np.concatenate((full_list_train, mask_zeros_cols), axis=1)
+
+
+features_kdd_train = features_kdd[trainId]
+zeros_rows = np.zeros((num_zeros, features_kdd.shape[1]))
+features_kdd_train = np.concatenate((features_kdd_train, zeros_rows), axis=0)
+
+list_graphs_full_train = Datasets([full_list_train], self_for_none, [sparse.csr_matrix(features_kdd_train)])
+org_adj,x_s, node_num = list_graphs_full_train.get__(0, len(list_graphs_full_train.list_adjs), self_for_none)
+org_adj = torch.cat(org_adj).to(device)
+x_s = torch.cat(x_s)
+reconstructed_adj, prior_samples, post_mean, post_log_std, generated_kernel_val,reconstructed_adj_logit = inductive_nips(org_adj.to(device), x_s.to(device), node_num)
+embedding_nips_train_full = np.concatenate((prior_samples[0].cpu().detach().numpy(),x_s.detach().numpy()[0]),axis=1)
+
+embedding_nips_train = prior_samples[0].cpu().detach().numpy()
+
+
+# GET ALL EMBEDDINGS
+
+# features_kdd = features_kdd.cpu().detach().numpy()
+# for i , idd in enumerate(trainId):
+#     features_kdd[idd][-16:] = embedding_nips_train[i]
+# features_kdd = torch.from_numpy(features_kdd)
+
+
+features_kdd = features_kdd.cpu().detach().numpy()
+for i , idd in enumerate(trainId):
+    features_kdd[idd] = np.pad(embedding_nips_train[i], (0, features_kdd.shape[1] - embedding_nips_train.shape[1]), 'constant', constant_values=(0,0))
+features_kdd = torch.from_numpy(features_kdd)
+
+
 list_graphs_full = Datasets([full_list], self_for_none, [sparse.csr_matrix(features_kdd)])
 org_adj,x_s, node_num = list_graphs_full.get__(0, len(list_graphs_full.list_adjs), self_for_none)
 org_adj = torch.cat(org_adj).to(device)
 x_s = torch.cat(x_s)
-pos_wight = torch.true_divide(sum([x**2 for x in node_num])-org_adj.sum(),org_adj.sum())
 reconstructed_adj, prior_samples, post_mean, post_log_std, generated_kernel_val,reconstructed_adj_logit = inductive_nips(org_adj.to(device), x_s.to(device), node_num)
 embedding_nips = np.concatenate((prior_samples[0].cpu().detach().numpy(),x_s.detach().numpy()[0]),axis=1)
 
@@ -216,20 +291,20 @@ embedding_nips = np.concatenate((prior_samples[0].cpu().detach().numpy(),x_s.det
 trainId = getattr(dataCenter_kdd, ds + '_train')
 labels = getattr(dataCenter_kdd, ds + '_labels')
 
-res_train_sage, classifier_sage = classification.NN_all(embedding_sage[trainId, :], 
+res_train_sage, classifier_sage = classification.NN_all(embedding_sage[trainId, :].cpu().detach().numpy(), 
                                                              labels[trainId])
 
-res_train_kdd, classifier_kdd = classification.NN_all(embedding_kdd[trainId, :], 
+res_train_kdd, classifier_kdd = classification.NN_all(embedding_kdd_train, 
                                                            labels[trainId])
 
-res_train_nips, classifier_nips = classification.NN_all(embedding_nips[trainId, :], 
+res_train_nips, classifier_nips = classification.NN_all(embedding_nips_train_full[trainId, :], 
                                                            labels[trainId])
 
 #%% evaluate on whole dataset
 
 
 # ********************** TRAIN SET
-print('\n# ****************** TRAIN SET ******************')
+print('\n# ****************** TRAIN SET Z_tr0 ******************')
 print('#  GraphSAGE')
 print(res_train_sage[-1])
 print('#  KDD Model')
@@ -237,9 +312,26 @@ print(res_train_kdd[-1])
 print('#  NIPS Model')
 print(res_train_nips[-1])
 
-labels_pred_sage = classifier_sage.predict(torch.Tensor(embedding_sage))
+
+
+
+
+
+labels_pred_sage = classifier_sage.predict(torch.Tensor(embedding_sage.cpu().detach().numpy()))
 labels_pred_kdd = classifier_kdd.predict(torch.Tensor(embedding_kdd))
 labels_pred_nips = classifier_nips.predict(torch.Tensor(embedding_nips))
+
+#************************ TRAIN SET
+print('\n# ****************** TRAIN SET Z_tr ******************')
+print('#  GraphSAGE')
+helper.print_eval(labels[trainId], labels_pred_sage[trainId])
+print('#  KDD Model')
+helper.print_eval(labels[trainId], labels_pred_kdd[trainId])
+print('#  NIPS Model')
+helper.print_eval(labels[trainId], labels_pred_nips[trainId])
+
+
+
 
 # ********************** TEST SET
 print('\n# ****************** TEST SET ******************')
