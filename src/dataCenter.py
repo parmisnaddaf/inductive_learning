@@ -13,52 +13,262 @@ import copy
 class DataCenter(object):
     """docstring for DataCenter"""
     def __init__(self, config):
-        super(DataCenter, self).__init__()
+        #super(DataCenter, self).__init__()
+        super().__init__()
         self.config = config
+        self.test_split = 0.3
+        self.val_split = 0.2
+        
+        
+    def _load_Cora(self, model_name):
+        dataSet='cora'
+        
+        cora_content_file = self.config['file_path.cora_content']
+        cora_cite_file = self.config['file_path.cora_cite']
+        
+        feat_data = []
+        labels = [] # label sequence of node
+        node_map = {} # map node to Node_ID
+        label_map = {} # map label to Label_ID
+        with open(cora_content_file) as fp:
+            for i,line in enumerate(fp):
+                info = line.strip().split()
+                feat_data.append([float(x) for x in info[1:-1]])
+                node_map[info[0]] = i
+                if not info[-1] in label_map:
+                    label_map[info[-1]] = len(label_map)
+                labels.append(label_map[info[-1]])                
+        feat_data = np.asarray(feat_data)
+        labels = np.asarray(labels, dtype=np.int64)
+        
+        # get adjacency matrix                
+        adjacency_matrix = lil_matrix((len(feat_data), len(feat_data)))
+        with open(cora_cite_file) as fp:
+            for i,line in enumerate(fp):
+                info = line.strip().split()
+                assert len(info) == 2
+                paper1 = node_map[info[0]]
+                paper2 = node_map[info[1]]
+                adjacency_matrix[paper1, paper2] = 1
+                adjacency_matrix[paper2, paper1] = 1
+                
+        assert len(feat_data) == len(labels) == adjacency_matrix.shape[0]
+        
+        # split dataset to train, val, test
+        test_indexs, val_indexs, train_indexs = self._split_data(feat_data.shape[0],
+                                                            self.test_split, self.val_split)
+            
+        if model_name == 'graphSage':
+            # get train adj in dictionary type
+            adj_lists = defaultdict(set)
+            train_set = set(train_indexs)
+            for row, col in zip(adjacency_matrix.nonzero()[0],
+                                    adjacency_matrix.nonzero()[1]):
+                if row in train_set and col in train_set:
+                    adj_lists[row].add(col)
+            setattr(self, dataSet + '_adj_train', adj_lists)
+
+
+        setattr(self, dataSet+'_test', test_indexs)
+        setattr(self, dataSet+'_val', val_indexs)
+        setattr(self, dataSet+'_train', train_indexs)
+
+        setattr(self, dataSet+'_feats', feat_data)
+        setattr(self, dataSet+'_labels', labels)
+        setattr(self, dataSet+'_adj_matrix', adjacency_matrix.toarray())
+        
+    def _load_Imdb(self, model_name):
+        dataSet = "IMDB"
+        
+        obj = []                
+        adj_file_name = self.config['file_path.imdb_edges']
+        
+        with open(adj_file_name, 'rb') as f:
+            obj.append(pkl.load(f))
+    
+        # merging diffrent edge type into a single adj matrix
+        adjacency_matrix = lil_matrix(obj[0][0].shape)
+        for matrix in obj[0]:
+            adjacency_matrix +=matrix
+    
+        matrix = obj[0]
+        edge_labels = matrix[0] + matrix[1]
+        edge_labels += (matrix[2] + matrix[3])*2
+    
+        node_label= []
+        in_1 = matrix[0].indices.min()
+        in_2 = matrix[0].indices.max()+1
+        in_3 = matrix[2].indices.max()+1
+        node_label.extend([0 for i in range(in_1)])
+        node_label.extend([1 for i in range(in_1,in_2)])
+        node_label.extend([2 for i in range(in_2, in_3)])
+    
+        obj = []                
+        feat_file_name = self.config['file_path.imdb_feats']
+        with open(feat_file_name, 'rb') as f:
+            obj.append(pkl.load(f))
+        feature = sp.csr_matrix(obj[0])
+        
+        index = -1
+        test_indexs, val_indexs, train_indexs = self._split_data(feature[:index].shape[0],
+                                                        self.test_split, self.val_split)
+        
+        if model_name == 'graphSage':
+            # get train adj in dictionary type
+            adj_lists = defaultdict(set)
+            train_set = set(train_indexs)
+            for row, col in zip(adjacency_matrix.nonzero()[0],
+                                    adjacency_matrix.nonzero()[1]):
+                if row in train_set and col in train_set:
+                    adj_lists[row].add(col)
+            setattr(self, dataSet + '_adj_train', adj_lists)
+              
+        setattr(self, dataSet+'_test', test_indexs)
+        setattr(self, dataSet+'_val', val_indexs)
+        setattr(self, dataSet+'_train', train_indexs)
+
+        setattr(self, dataSet+'_feats', feature[:index].toarray())
+        setattr(self, dataSet+'_labels', np.array(node_label[:index]))
+        setattr(self, dataSet+'_adj_matrix', adjacency_matrix[:index,:index].toarray())
+        setattr(self, dataSet+'_edge_labels', edge_labels[:index].toarray())
+        
+    
+    def _load_Acm(self, model_name):
+        dataSet = 'ACM'
+        
+        obj = []
+        adj_file_name = self.config['file_path.acm_edges']
+        with open(adj_file_name, 'rb') as f:
+                obj.append(pkl.load(f))
+                
+        adjacency_matrix = sp.csr_matrix(obj[0][0].shape)
+        for matrix in obj:
+            nnz = matrix[0].nonzero() # indices of nonzero values
+            for i, j in zip(nnz[0], nnz[1]):
+                adjacency_matrix[i,j] = 1
+                adjacency_matrix[j,i] = 1
+            #adj +=matrix[0]
+        
+        # to fix the bug on running GraphSAGE
+        """
+        adjacency_matrix = adjacency_matrix.toarray()
+        for i in range(len(adjacency_matrix)):
+            if sum(adjacency_matrix[i, :]) == 0:
+                idx = np.random.randint(0, len(adjacency_matrix))
+                adjacency_matrix[i,idx] = 1
+                adjacency_matrix[idx,i] = 1
+        """
+    
+        edge_labels = matrix[0] + matrix[1]
+        edge_labels += (matrix[2] + matrix[3])*2
+    
+        node_label= []
+        in_1 = matrix[0].indices.min()
+        in_2 = matrix[0].indices.max()+1
+        in_3 = matrix[2].indices.max()+1
+        node_label.extend([0 for i in range(in_1)])
+        node_label.extend([1 for i in range(in_1,in_2)])
+        node_label.extend([2 for i in range(in_2, in_3)])
+    
+        obj = []
+        feat_file_name = self.config['file_path.acm_feats']
+        with open(feat_file_name, 'rb') as f:
+            obj.append(pkl.load(f))
+        feature = sp.csr_matrix(obj[0])
+    
+        index = -1
+        test_indexs, val_indexs, train_indexs = self._split_data(feature[:index].shape[0],
+                                                        self.test_split, self.val_split)
+        
+        if model_name == 'graphSage':
+            # get train adj in dictionary type
+            adj_lists = defaultdict(set)
+            train_set = set(train_indexs)
+            for row, col in zip(adjacency_matrix.nonzero()[0],
+                                    adjacency_matrix.nonzero()[1]):
+                if row in train_set and col in train_set:
+                    adj_lists[row].add(col)
+            setattr(self, dataSet + '_adj_train', adj_lists)
+            
+        setattr(self, dataSet+'_test', test_indexs)
+        setattr(self, dataSet+'_val', val_indexs)
+        setattr(self, dataSet+'_train', train_indexs)
+        
+        setattr(self, dataSet+'_feats', feature[:index].toarray())
+        setattr(self, dataSet+'_labels',np.array(node_label[:index]))
+        setattr(self, dataSet+'_adj_matrix', adjacency_matrix[:index,:index].toarray())
+        setattr(self, dataSet+'_edge_labels', edge_labels[:index,:index].toarray())
+        
+    def _load_Dblp(self, model_name):
+        dataSet = 'DBLP'
+        obj = []
+    
+        adj_file_name = self.config['file_path.dblp_edges']
+        with open(adj_file_name, 'rb') as f:
+                obj.append(pkl.load(f))
+    
+        # merging diffrent edge type into a single adj matrix
+        adjacency_matrix = sp.csr_matrix(obj[0][0].shape)
+        for matrix in obj[0]:
+            adjacency_matrix +=matrix
+    
+        matrix = obj[0]
+        edge_labels = matrix[0] + matrix[1]
+        edge_labels += (matrix[2] + matrix[3])*2
+    
+        node_label= []
+        in_1 = matrix[0].nonzero()[0].min()
+        in_2 = matrix[0].nonzero()[0].max()+1
+        in_3 = matrix[3].nonzero()[0].max()+1
+        matrix[0].nonzero()
+        node_label.extend([0 for i in range(in_1)])
+        node_label.extend([1 for i in range(in_1,in_2)])
+        node_label.extend([2 for i in range(in_2, in_3)])
+    
+    
+        obj = []
+        feat_file_name = self.config['file_path.dblp_feats']
+        with open(feat_file_name, 'rb') as f:
+            obj.append(pkl.load(f))
+        feature = sp.csr_matrix(obj[0])
+        
+        
+        index = -1
+        test_indexs, val_indexs, train_indexs = self._split_data(feature[:index].shape[0],
+                                                            self.test_split, self.val_split)
+              
+        if model_name == 'graphSage':
+            # get train adj in dictionary type
+            adj_lists = defaultdict(set)
+            train_set = set(train_indexs)
+            for row, col in zip(adjacency_matrix.nonzero()[0],
+                                    adjacency_matrix.nonzero()[1]):
+                if row in train_set and col in train_set:
+                    adj_lists[row].add(col)
+            setattr(self, dataSet + '_adj_train', adj_lists)
+            
+        setattr(self, dataSet+'_test', test_indexs)
+        setattr(self, dataSet+'_val', val_indexs)
+        setattr(self, dataSet+'_train', train_indexs)
+
+        setattr(self, dataSet+'_feats', feature[:index].toarray())
+        setattr(self, dataSet+'_labels', np.array(node_label[:index]))
+        setattr(self, dataSet+'_adj_matrix', adjacency_matrix[:index,:index].toarray())
+        setattr(self, dataSet+'_edge_labels', edge_labels[:index].toarray())
+
+        
         
     def load_dataSet(self, dataSet='cora', model_name= 'KDD'):
         if model_name == 'graphSage':
             if dataSet == 'cora':
-                cora_content_file = self.config['file_path.cora_content']
-                cora_cite_file = self.config['file_path.cora_cite']
-    
-                feat_data = []
-                labels = [] # label sequence of node
-                node_map = {} # map node to Node_ID
-                label_map = {} # map label to Label_ID
-                with open(cora_content_file) as fp:
-                    for i,line in enumerate(fp):
-                        info = line.strip().split()
-                        feat_data.append([float(x) for x in info[1:-1]])
-                        node_map[info[0]] = i
-                        if not info[-1] in label_map:
-                            label_map[info[-1]] = len(label_map)
-                        labels.append(label_map[info[-1]])
-                        
-                feat_data = np.asarray(feat_data)
-                labels = np.asarray(labels, dtype=np.int64)
+                self._load_Cora(model_name)
+            elif dataSet == 'IMDB':
+                self._load_Imdb(model_name)
+            elif dataSet == 'ACM':
+                self._load_Acm(model_name)
+            elif dataSet == 'DBLP':
+                self._load_Dblp(model_name)
                 
-                adj_lists = defaultdict(set)
-                with open(cora_cite_file) as fp:
-                    for i,line in enumerate(fp):
-                        info = line.strip().split()
-                        assert len(info) == 2
-                        paper1 = node_map[info[0]]
-                        paper2 = node_map[info[1]]
-                        adj_lists[paper1].add(paper2)
-                        adj_lists[paper2].add(paper1)
-                            
-                assert len(feat_data) == len(labels) == len(adj_lists)
-                test_indexs, val_indexs, train_indexs = self._split_data(feat_data.shape[0])
-    
-                setattr(self, dataSet+'_test', test_indexs)
-                setattr(self, dataSet+'_val', val_indexs)
-                setattr(self, dataSet+'_train', train_indexs)
-    
-                setattr(self, dataSet+'_feats', feat_data)
-                setattr(self, dataSet+'_labels', labels)
-                setattr(self, dataSet+'_adj_lists', adj_lists)
-    
             elif dataSet == 'pubmed':
                 pubmed_content_file = self.config['file_path.pubmed_paper']
                 pubmed_cite_file = self.config['file_path.pubmed_cites']
@@ -263,7 +473,7 @@ class DataCenter(object):
 
                 obj = []
 
-                adj_file_name = "/local-scratch/parmis/indd/inductive_learning/DBLP/edges.pkl"
+                adj_file_name = "/Users/parmis/Desktop/indd/inductive_learning/DBLP/edges.pkl"
             
             
                 with open(adj_file_name, 'rb') as f:
@@ -289,7 +499,7 @@ class DataCenter(object):
             
             
                 obj = []
-                with open("/local-scratch/parmis/indd/inductive_learning/DBLP/node_features.pkl", 'rb') as f:
+                with open("/Users/parmis/Desktop/indd/inductive_learning/DBLP/node_features.pkl", 'rb') as f:
                     obj.append(pkl.load(f))
                 feature = sp.csr_matrix(obj[0])
                 
@@ -307,12 +517,13 @@ class DataCenter(object):
                 setattr(self, dataSet+'_edge_labels', edge_labels[:index].toarray())
             
 
-    def _split_data(self, num_nodes, test_split = 3, val_split = 6):
+    def _split_data(self, num_nodes, test_split = 0.2, val_split = 0.2):
         rand_indices = np.random.permutation(num_nodes)
         
-        test_size = num_nodes // test_split
-        val_size = num_nodes // val_split
+        test_size = int(num_nodes * test_split)
+        val_size = int(num_nodes * val_split)
         train_size = num_nodes - (test_size + val_size)
+        print(num_nodes, train_size, val_size, test_size)
 
         test_indexs = rand_indices[:test_size]
         val_indexs = rand_indices[test_size:(test_size+val_size)]
@@ -334,6 +545,7 @@ def datasetConvert(dataCenter_kdd, ds):
             for col in range(len(adj_kdd[0])):
                 if adj_kdd[row][col] == 1:
                     adj_lists[row].add(col)
+        print(adj_lists)
                 
         setattr(dataCenter_sage, ds+'_adj_lists', adj_lists)
     return dataCenter_sage

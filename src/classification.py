@@ -19,7 +19,7 @@ from torch.utils.data import TensorDataset
 #import matplotlib
 #matplotlib.use('TkAgg')
 
-import plotter
+import src.plotter as plotter
 
 
 def get_metrices(labels_test, labels_pred):
@@ -190,14 +190,11 @@ def NN(features, labels):
     result = get_metrices(labels_test, labels_pred)
     return result , model
 
-def NN_all(features, labels):
+def NN_all(features, labels, num_epochs = 200, batch_size = 64, learning_rate = 0.01):
 
     # Hyper-parameters 
     input_size = features.shape[1]
     hidden_size = 64
-    num_epochs = 100
-    batch_size = 100
-    learning_rate = 0.001
     
     num_classes = len(np.unique(labels, return_counts=False))
     y = torch.Tensor(labels).type(torch.LongTensor) 
@@ -213,25 +210,30 @@ def NN_all(features, labels):
     class NeuralNet(nn.Module):
         def __init__(self, input_size, hidden_size, num_classes):
             super(NeuralNet, self).__init__()
-            np.random.seed(0)
+            """np.random.seed(0)
             torch.seed()
             torch.manual_seed(0)
             torch.cuda.manual_seed(0)
             torch.backends.cudnn.enabled = False
             torch.backends.cudnn.benchmark = False
-            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.deterministic = True"""
 
-            self.input_size = input_size
-            self.l1 = nn.Linear(input_size, hidden_size) 
-            self.relu = nn.ReLU()
-            self.l2 = nn.Linear(hidden_size, num_classes)  
+            self.model = nn.Sequential(
+                        nn.Linear(input_size, hidden_size),
+                        nn.ReLU(),
+                        nn.Linear(hidden_size, num_classes)
+                    )
+            
+            self.init_params()
+
+        def init_params(self):
+            for param in self.parameters():
+                if len(param.size()) == 2:
+                    nn.init.xavier_uniform_(param)
         
         def forward(self, x):
-            out = self.l1(x)
-            out = self.relu(out)
-            out = self.l2(out)
             # no activation and no softmax at the end
-            return out
+            return self.model(x)
         
         def predict(self, x):
             output = self.forward(x)
@@ -241,7 +243,6 @@ def NN_all(features, labels):
     
     model = NeuralNet(input_size, hidden_size, num_classes)
     loss_function = nn.CrossEntropyLoss()
-    
     
     # Loss and optimizer
     criterion = nn.CrossEntropyLoss()
@@ -264,6 +265,7 @@ def NN_all(features, labels):
 
         outputs = model(X)
         train_loss = criterion(outputs, y)
+        print('Epoch [{}/{}], Loss: {:.4f} '.format(epoch+1, num_epochs, train_loss.item()))
 
 
     # Test the model

@@ -20,61 +20,17 @@ import dgl
 from scipy import sparse
 from dgl.nn.pytorch import GraphConv as GraphConv
 
-from dataCenter import *
-from utils import *
-from models import *
+from src.dataCenter import *
+from src.utils import *
+from src.models import *
 import timeit
 #import src.plotter as plotter
 #import src.graph_statistics as GS
 
-import classification
+import src.classification as classification
 
 
-#%% GraphSage Model
-def train_graphSage(dataCenter, features, args, config, device):
-    ds = args.dataSet
-    graphSage = GraphSage(config['setting.num_layers'], features.size(1), 
-                          config['setting.hidden_emb_size'], 
-                          features, getattr(dataCenter, ds+'_adj_lists'), 
-                          device, gcn=args.gcn, agg_func=args.agg_func)
-    graphSage.to(device)
-    
-    num_labels = len(set(getattr(dataCenter, ds+'_labels')))
-    classification = Classification(config['setting.hidden_emb_size'], num_labels)
-    classification.to(device)
-    
-    unsupervised_loss = UnsupervisedLoss(getattr(dataCenter, ds+'_adj_lists'), 
-                                         getattr(dataCenter, ds+'_train'), device)
-    if args.learn_method == 'sup':
-        print('GraphSage with Supervised Learning')
-    elif args.learn_method == 'plus_unsup':
-        print('GraphSage with Supervised Learning plus Net Unsupervised Learning')
-    else:
-        print('GraphSage with Net Unsupervised Learning')
-    
-    for epoch in range(args.epochs):
-        print('----------------------EPOCH %d-----------------------' % epoch)
-        
-        graphSage, classification = apply_model(dataCenter, ds, graphSage, 
-                                                classification, unsupervised_loss, 
-                                                args.b_sz, 
-                                                args.unsup_loss, device, 
-                                                args.learn_method)
-        print(graphSage, classification)
-        
-        if (epoch == args.epochs-1 or (epoch+1) % 100 == 0) and args.learn_method == 'unsup':
-            classification, args.max_vali_f1 = train_classification(dataCenter, 
-                                                        graphSage, 
-                                                        classification, ds, device, 
-                                                        args.max_vali_f1, 
-                                                        args.name, epochs = 2)
-        if args.learn_method != 'unsup':
-            args.max_vali_f1 = evaluate(dataCenter, ds, graphSage, classification, 
-                                                  device, args.max_vali_f1, 
-                                                  args.name, epoch)
-            
-    return graphSage, classification
-   
+
 
 #%% KDD model
 def train_kddModel(dataCenter, features, args, device):
@@ -216,6 +172,7 @@ def train_kddModel(dataCenter, features, args, device):
                            num_of_relations, encoder=encoder_model,
                            decoder=decoder_model)  # parameter namimng, it should be dimentionality of distriburion
     
+    print(model)
 
     optimizer = torch.optim.Adam(model.parameters(), lr)
     
@@ -375,7 +332,7 @@ def train_nipsModel(dataCenter, features, args, device):
     # ToDo: both bin's center and widtg also maximum value of it should be determinde auomaticly
     
     kernel_model = kernel(kernel_type = kernl_type, step_num = step_num,
-                bin_width= bin_width, bin_center=bin_center, degree_bin_center=degree_center, degree_bin_width=degree_width, device=device)
+                bin_width= bin_width, bin_center=bin_center, degree_bin_center=degree_center, degree_bin_width=degree_width)
     # 225#
     in_feature_dim = list_graphs.feature_size # ToDo: consider none Synthasis data
     print("Feature dim is: ", in_feature_dim)
@@ -403,6 +360,7 @@ def train_nipsModel(dataCenter, features, args, device):
     optimizer = torch.optim.Adam(model.parameters(), lr)
     
     num_nodes = list_graphs.max_num_nodes
+    print("NUM NODES IS:  ", num_nodes)
     #ToDo Check the effect of norm and pos weight
     
     
